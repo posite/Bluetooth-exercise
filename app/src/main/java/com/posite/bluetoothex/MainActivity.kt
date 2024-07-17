@@ -7,17 +7,16 @@ import android.Manifest.permission.BLUETOOTH_CONNECT
 import android.Manifest.permission.BLUETOOTH_SCAN
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCallback
-import android.bluetooth.BluetoothGattService
-import android.bluetooth.BluetoothManager
-import android.bluetooth.le.BluetoothLeScanner
-import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanResult
+import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -25,7 +24,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.annotation.RequiresPermission
+import androidx.annotation.RequiresApi
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -34,66 +33,50 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import com.posite.bluetoothex.bluetooth.BluetoothLE
+import com.posite.bluetoothex.bluetooth.BluetoothLeService
 import com.posite.bluetoothex.ui.theme.BluetoothExTheme
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
-    private val bluetooth by lazy {
-        this@MainActivity.getSystemService(Context.BLUETOOTH_SERVICE)
-                as? BluetoothManager
-            ?: throw Exception("Bluetooth is not supported by this device")
-    }
+    private val ble by lazy { BluetoothLE(this) }
+    private val devices = mutableListOf<BluetoothDevice>()
+    private var bluetoothService: BluetoothLeService? = null
 
-    private val scanner: BluetoothLeScanner
-        get() = bluetooth.adapter.bluetoothLeScanner
-
-    private var selectedDevice: BluetoothDevice? = null
-    private var gatt: BluetoothGatt? = null
-    private var services: List<BluetoothGattService> = emptyList()
-
-    private val scanCallback = object : ScanCallback() {
-        @SuppressLint("MissingPermission")
-        override fun onScanResult(callbackType: Int, result: ScanResult?) {
-            super.onScanResult(callbackType, result)
-            result?.let {
-                if (it.device.name == "Buds Pro") {
-                    Log.d("Bluetooth_", it.device.name)
-                    selectedDevice = it.device
-                    scanner.stopScan(this)
-                    connect()
+    // Code to manage Service lifecycle.
+    private val serviceConnection: ServiceConnection = object : ServiceConnection {
+        override fun onServiceConnected(
+            componentName: ComponentName,
+            service: IBinder
+        ) {
+            bluetoothService = (service as BluetoothLeService.LocalBinder).getService()
+            Log.e("BLE service connect", bluetoothService.toString())
+            bluetoothService?.let { bluetooth ->
+                if (!bluetooth.initialize()) {
+                    Log.e("BLE service connect", "Unable to initialize Bluetooth")
+                    finish()
+                }
+                // perform device connection
+                Log.d("BLE service connect", "Connecting to device")
+                devices.forEach { device ->
+                    bluetooth.connect(device.address)
                 }
             }
         }
 
-        override fun onScanFailed(errorCode: Int) {
-            super.onScanFailed(errorCode)
+        override fun onServiceDisconnected(componentName: ComponentName) {
+            bluetoothService = null
         }
     }
 
-    private val callback = object : BluetoothGattCallback() {
-        @SuppressLint("MissingPermission")
-        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-            super.onConnectionStateChange(gatt, status, newState)
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                return
+    private fun observe() {
+        CoroutineScope(Dispatchers.IO).launch {
+            ble.foundDevices.collect {
+                devices.addAll(it)
+                Log.d("devices", devices.toString())
             }
-            Log.d("Bluetooth_", "Connected to device")
-            Toast.makeText(this@MainActivity, "Connected to device", Toast.LENGTH_SHORT).show()
-            if (newState == BluetoothGatt.STATE_CONNECTING || newState == BluetoothGatt.STATE_DISCONNECTED || newState == BluetoothGatt.GATT_SUCCESS) {
-                Log.d("Bluetooth_", "Connected to device")
-                Toast.makeText(this@MainActivity, "Connected to device", Toast.LENGTH_SHORT).show()
-                discoverServices()
-            }
-        }
-
-        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            super.onServicesDiscovered(gatt, status)
-            services = gatt.services
-            Log.d("Bluetooth_", "Discovered services: ${services.size}")
-            Toast.makeText(
-                this@MainActivity,
-                "Discovered services: ${services.size}",
-                Toast.LENGTH_SHORT
-            ).show()
         }
     }
 
@@ -101,6 +84,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        observe()
+        val gattServiceIntent =
+            Intent(this@MainActivity, BluetoothLeService::class.java)
+        bindService(gattServiceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
         setContent {
             BluetoothExTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
@@ -118,7 +105,7 @@ class MainActivity : ComponentActivity() {
                                 ).show()
                             }
                         } else {
-                            startScanning()
+                            ble.scanLeDevice()
                         }
 
                     }
@@ -127,19 +114,45 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @SuppressLint("MissingPermission")
-    fun startScanning() {
-        scanner.startScan(scanCallback)
+    private val gattUpdateReceiver: BroadcastReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                BluetoothLeService.ACTION_GATT_CONNECTED -> {
+                    Log.d("BLE", "Connected")
+                }
+
+                BluetoothLeService.ACTION_GATT_DISCONNECTED -> {
+                    Log.d("BLE", "Disconnected")
+                }
+
+                BluetoothLeService.ACTION_GATT_SERVICES_DISCOVERED -> {
+                    Log.d("BLE", "Services discovered")
+                }
+            }
+        }
     }
 
-    @RequiresPermission(BLUETOOTH_CONNECT)
-    fun connect() {
-        gatt = selectedDevice!!.connectGatt(this@MainActivity, true, callback)
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    override fun onResume() {
+        super.onResume()
+        registerReceiver(gattUpdateReceiver, makeGattUpdateIntentFilter(), RECEIVER_EXPORTED)
+        if (bluetoothService != null) {
+            val result = bluetoothService!!.connect(bluetoothService!!.deviceAddress)
+            Log.d("", "Connect request result=$result")
+        }
     }
 
-    @RequiresPermission(BLUETOOTH_CONNECT)
-    fun discoverServices() {
-        gatt!!.discoverServices()
+    override fun onPause() {
+        super.onPause()
+        unregisterReceiver(gattUpdateReceiver)
+    }
+
+    private fun makeGattUpdateIntentFilter(): IntentFilter? {
+        return IntentFilter().apply {
+            addAction(BluetoothLeService.ACTION_GATT_CONNECTED)
+            addAction(BluetoothLeService.ACTION_GATT_DISCONNECTED)
+        }
     }
 }
 
