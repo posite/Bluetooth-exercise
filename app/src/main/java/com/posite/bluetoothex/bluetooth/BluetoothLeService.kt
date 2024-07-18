@@ -60,8 +60,8 @@ class BluetoothLeService : Service() {
         return bluetoothGatt?.services
     }
 
-    fun initialize(): Boolean {
-        bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
+    fun initialize(ble: BluetoothLE): Boolean {
+        bluetoothAdapter = ble.getAdapter()
         if (bluetoothAdapter == null) {
             Log.e(BLETAG, "Unable to obtain a BluetoothAdapter.")
             return false

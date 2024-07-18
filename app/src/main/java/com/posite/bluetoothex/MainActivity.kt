@@ -8,15 +8,12 @@ import android.Manifest.permission.BLUETOOTH_SCAN
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
 import android.content.BroadcastReceiver
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.os.IBinder
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -46,16 +43,14 @@ class MainActivity : ComponentActivity() {
     private var bluetoothService: BluetoothLeService? = null
 
     // Code to manage Service lifecycle.
+    /*
     private val serviceConnection: ServiceConnection = object : ServiceConnection {
-        override fun onServiceConnected(
-            componentName: ComponentName,
-            service: IBinder
-        ) {
+        override fun onServiceConnected(componentName: ComponentName, service: IBinder) {
             bluetoothService = (service as BluetoothLeService.LocalBinder).getService()
-            Log.e("BLE service connect", bluetoothService.toString())
+            Log.d("BLE service connect", bluetoothService.toString())
             bluetoothService?.let { bluetooth ->
-                if (!bluetooth.initialize()) {
-                    Log.e("BLE service connect", "Unable to initialize Bluetooth")
+                if (!bluetooth.initialize(ble)) {
+                    Log.d("BLE service connect", "Unable to initialize Bluetooth")
                     finish()
                 }
                 // perform device connection
@@ -70,10 +65,12 @@ class MainActivity : ComponentActivity() {
             bluetoothService = null
         }
     }
+    */
 
     private fun observe() {
         CoroutineScope(Dispatchers.IO).launch {
             ble.foundDevices.collect {
+                devices.clear()
                 devices.addAll(it)
                 Log.d("devices", devices.toString())
             }
@@ -85,9 +82,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         observe()
-        val gattServiceIntent =
-            Intent(this@MainActivity, BluetoothLeService::class.java)
-        bindService(gattServiceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
         setContent {
             BluetoothExTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
